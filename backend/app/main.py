@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from .config import Settings
 from .models import APKRecord
+from .runtime import build_runtime_service
 from .runtime.errors import (
     ADBCommandError,
     APKFileMissing,
@@ -19,7 +20,7 @@ from .runtime.errors import (
     RuntimeErrorBase,
     RuntimeNotReady,
 )
-from .runtime.models import AndroidApp, RuntimeState, RuntimeStatus
+from .runtime.models import AndroidApp, RuntimeStatus
 from .storage import APKStorage
 
 
@@ -71,39 +72,6 @@ def _runtime_error(exc: RuntimeErrorBase, operation: str) -> JSONResponse:
     return _error("RUNTIME_OPERATION_FAILED", "Android runtime operation failed", 502)
 
 
-class _UnconfiguredRuntimeService:
-    """Safe placeholder until production adapters are wired in Phase 2."""
-
-    def status(self) -> RuntimeStatus:
-        return RuntimeStatus(state=RuntimeState.STOPPED)
-
-    def _unavailable(self) -> None:
-        raise RuntimeNotReady("Android runtime is not configured")
-
-    def start(self) -> RuntimeStatus:
-        self._unavailable()
-        raise AssertionError("unreachable")
-
-    def stop(self) -> RuntimeStatus:
-        return RuntimeStatus(state=RuntimeState.STOPPED)
-
-    def reset(self) -> RuntimeStatus:
-        self._unavailable()
-        raise AssertionError("unreachable")
-
-    def install(self, apk_id: str, storage: APKStorage) -> AndroidApp:
-        self._unavailable()
-        raise AssertionError("unreachable")
-
-    def launch(self, apk_id: str, storage: APKStorage) -> AndroidApp:
-        self._unavailable()
-        raise AssertionError("unreachable")
-
-    def list_apps(self) -> list[AndroidApp]:
-        self._unavailable()
-        raise AssertionError("unreachable")
-
-
 def create_app(
     settings: Settings | None = None,
     *,
@@ -111,7 +79,7 @@ def create_app(
 ) -> FastAPI:
     resolved_settings = settings or Settings()
     storage = APKStorage(resolved_settings.data_dir)
-    runtime = runtime_service or _UnconfiguredRuntimeService()
+    runtime = runtime_service or build_runtime_service(resolved_settings)
 
     app = FastAPI(title="Android Emulator API", version="0.2.0")
     app.state.settings = resolved_settings
