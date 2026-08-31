@@ -30,7 +30,6 @@ protocol SessionAPI: Sendable {
     func install(apkID: String) async throws -> AndroidApp
     func launch(apkID: String) async throws -> AndroidApp
     func streamStart() async throws -> StreamStatus
-    func streamStatus() async throws -> StreamStatus
     func streamStop() async throws -> StreamStatus
     func inputWebSocketURL() -> URL?
 }
