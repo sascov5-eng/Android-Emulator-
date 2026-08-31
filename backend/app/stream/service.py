@@ -45,10 +45,30 @@ class StreamManager:
             error=self._error,
         )
 
-    def status(self) -> StreamStatus:
-        if self._state is StreamState.LIVE and not self._process.is_alive():
+    def _restart_expired_segment(self) -> None:
+        try:
+            self._process.start_capture()
+            if not self._process.wait_until_live(self._start_timeout_seconds):
+                try:
+                    self._process.stop_capture()
+                except Exception:
+                    pass
+                raise StreamUnavailable("stream segment did not become live")
+        except Exception:
             self._state = StreamState.ERROR
             self._error = "Android stream is not available"
+            return
+
+        self._state = StreamState.LIVE
+        self._error = None
+
+    def status(self) -> StreamStatus:
+        if self._state is StreamState.LIVE and not self._process.is_alive():
+            # Android's screenrecord is intentionally capped below its hard
+            # 180-second limit. Treat a cleanly ended capture as a segment
+            # boundary and rebuild the capture/publish pipe on the next
+            # status check rather than failing the user session immediately.
+            self._restart_expired_segment()
         return self._status()
 
     def start(self) -> StreamStatus:
