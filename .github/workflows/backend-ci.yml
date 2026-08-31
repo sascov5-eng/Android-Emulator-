@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      - "docker-compose.runtime.yml"
+      - ".env.example"
       - ".github/workflows/backend-ci.yml"
   push:
     branches:
@@ -11,12 +13,14 @@ on:
       - "feat/**"
     paths:
       - "backend/**"
+      - "docker-compose.runtime.yml"
+      - ".env.example"
       - ".github/workflows/backend-ci.yml"
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -38,3 +42,26 @@ jobs:
       - name: Run tests
         working-directory: backend
         run: python -m pytest -v
+
+      - name: Validate ADB deployment isolation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          targets = [Path("docker-compose.runtime.yml"), Path(".env.example")]
+          for path in targets:
+              text = path.read_text(encoding="utf-8")
+              for number, line in enumerate(text.splitlines(), start=1):
+                  compact = line.replace(" ", "").replace('"', "").replace("'", "")
+                  if "0.0.0.0:5555" in compact:
+                      raise SystemExit(f"Public ADB binding in {path}:{number}")
+                  if "5555:5555" in compact and "127.0.0.1:" not in compact:
+                      raise SystemExit(f"Unscoped ADB port mapping in {path}:{number}")
+
+          env = Path(".env.example").read_text(encoding="utf-8")
+          if "ANDROID_EMULATOR_ADB_HOST=127.0.0.1" not in env:
+              raise SystemExit(".env.example must keep ADB on loopback")
+          PY
+
+      - name: Build runtime-controller image
+        run: docker build -t android-emulator-backend:test ./backend
