@@ -1,14 +1,25 @@
 services:
+  mediamtx:
+    image: bluenviron/mediamtx:1
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./streaming/mediamtx.yml:/mediamtx.yml:ro
+
   backend:
     build:
       context: ./backend
     network_mode: host
     restart: unless-stopped
+    depends_on:
+      - mediamtx
     env_file:
       - .env
     environment:
       ANDROID_EMULATOR_DATA_DIR: /data
       ANDROID_EMULATOR_ADB_HOST: 127.0.0.1
+      # FFmpeg publishes only to MediaMTX's host-loopback RTSP listener.
+      ANDROID_EMULATOR_STREAM_RTSP_URL: rtsp://127.0.0.1:8554/android/session
     volumes:
       - android-emulator-backend-data:/data
       # RuntimeManager controls ReDroid through the host Docker daemon.
