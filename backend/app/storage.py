@@ -37,6 +37,16 @@ class APKStorage:
                 """
             )
 
+    @staticmethod
+    def _record_from_row(row: sqlite3.Row) -> APKRecord:
+        return APKRecord(
+            id=row["id"],
+            original_filename=row["original_filename"],
+            sha256=row["sha256"],
+            size_bytes=row["size_bytes"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
     def save_upload(self, filename: str, data: bytes) -> APKRecord:
         apk_id = str(uuid.uuid4())
         destination = self.apk_dir / f"{apk_id}.apk"
@@ -83,13 +93,38 @@ class APKStorage:
                 """
             ).fetchall()
 
-        return [
-            APKRecord(
-                id=row["id"],
-                original_filename=row["original_filename"],
-                sha256=row["sha256"],
-                size_bytes=row["size_bytes"],
-                created_at=datetime.fromisoformat(row["created_at"]),
-            )
-            for row in rows
-        ]
+        return [self._record_from_row(row) for row in rows]
+
+    def get_apk(self, apk_id: str) -> APKRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, original_filename, sha256, size_bytes, created_at
+                FROM apks
+                WHERE id = ?
+                """,
+                (apk_id,),
+            ).fetchone()
+
+        return self._record_from_row(row) if row is not None else None
+
+    def path_for(self, apk_id: str) -> Path | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT storage_path FROM apks WHERE id = ?",
+                (apk_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        candidate = Path(row["storage_path"])
+        try:
+            resolved_candidate = candidate.resolve(strict=False)
+            resolved_root = self.apk_dir.resolve(strict=False)
+        except OSError:
+            return None
+
+        if resolved_candidate.parent != resolved_root:
+            return None
+        return candidate
