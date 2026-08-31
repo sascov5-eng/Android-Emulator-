@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 
 from .config import Settings
 from .models import APKRecord
+from .runtime.errors import (
+    ADBCommandError,
+    APKFileMissing,
+    APKNotFound,
+    AppLaunchError,
+    AppResolutionError,
+    RuntimeBootTimeout,
+    RuntimeDriverError,
+    RuntimeErrorBase,
+    RuntimeNotReady,
+)
+from .runtime.models import AndroidApp, RuntimeState, RuntimeStatus
 from .storage import APKStorage
 
 
@@ -17,13 +30,93 @@ def _error(code: str, message: str, status_code: int) -> JSONResponse:
     )
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def _runtime_error(exc: RuntimeErrorBase, operation: str) -> JSONResponse:
+    if isinstance(exc, RuntimeNotReady):
+        return _error("RUNTIME_NOT_READY", "Android runtime is not ready", 409)
+    if isinstance(exc, APKNotFound):
+        return _error("APK_NOT_FOUND", "APK was not found", 404)
+    if isinstance(exc, APKFileMissing):
+        return _error("APK_FILE_MISSING", "Stored APK file is missing", 410)
+    if isinstance(exc, RuntimeBootTimeout):
+        return _error(
+            "RUNTIME_BOOT_TIMEOUT",
+            "Android runtime did not finish booting in time",
+            504,
+        )
+    if isinstance(exc, AppResolutionError):
+        return _error(
+            "APP_RESOLUTION_FAILED",
+            "Android application metadata could not be resolved",
+            422,
+        )
+    if isinstance(exc, AppLaunchError):
+        return _error(
+            "APP_LAUNCH_FAILED",
+            "Android application failed to launch",
+            502,
+        )
+    if isinstance(exc, ADBCommandError):
+        return _error("ADB_COMMAND_FAILED", "Android device command failed", 502)
+    if isinstance(exc, RuntimeDriverError):
+        mapping = {
+            "start": ("RUNTIME_START_FAILED", "Android runtime failed to start"),
+            "stop": ("RUNTIME_STOP_FAILED", "Android runtime failed to stop"),
+            "reset": ("RUNTIME_RESET_FAILED", "Android runtime failed to reset"),
+        }
+        code, message = mapping.get(
+            operation,
+            ("RUNTIME_OPERATION_FAILED", "Android runtime operation failed"),
+        )
+        return _error(code, message, 502)
+    return _error("RUNTIME_OPERATION_FAILED", "Android runtime operation failed", 502)
+
+
+class _UnconfiguredRuntimeService:
+    """Safe placeholder until production adapters are wired in Phase 2."""
+
+    def status(self) -> RuntimeStatus:
+        return RuntimeStatus(state=RuntimeState.STOPPED)
+
+    def _unavailable(self) -> None:
+        raise RuntimeNotReady("Android runtime is not configured")
+
+    def start(self) -> RuntimeStatus:
+        self._unavailable()
+        raise AssertionError("unreachable")
+
+    def stop(self) -> RuntimeStatus:
+        return RuntimeStatus(state=RuntimeState.STOPPED)
+
+    def reset(self) -> RuntimeStatus:
+        self._unavailable()
+        raise AssertionError("unreachable")
+
+    def install(self, apk_id: str, storage: APKStorage) -> AndroidApp:
+        self._unavailable()
+        raise AssertionError("unreachable")
+
+    def launch(self, apk_id: str, storage: APKStorage) -> AndroidApp:
+        self._unavailable()
+        raise AssertionError("unreachable")
+
+    def list_apps(self) -> list[AndroidApp]:
+        self._unavailable()
+        raise AssertionError("unreachable")
+
+
+def create_app(
+    settings: Settings | None = None,
+    *,
+    runtime_service: Any | None = None,
+) -> FastAPI:
     resolved_settings = settings or Settings()
     storage = APKStorage(resolved_settings.data_dir)
+    runtime = runtime_service or _UnconfiguredRuntimeService()
 
-    app = FastAPI(title="Android Emulator API", version="0.1.0")
+    app = FastAPI(title="Android Emulator API", version="0.2.0")
     app.state.settings = resolved_settings
     app.state.apk_storage = storage
+    app.state.runtime_service = runtime
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -49,6 +142,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _error("APK_TOO_LARGE", "APK exceeds the configured size limit", 413)
 
         return storage.save_upload(filename, data)
+
+    @app.get("/v1/runtime/status", response_model=RuntimeStatus)
+    def runtime_status() -> RuntimeStatus | JSONResponse:
+        try:
+            return runtime.status()
+        except RuntimeErrorBase as exc:
+            return _runtime_error(exc, "status")
+
+    @app.post("/v1/runtime/start", response_model=RuntimeStatus)
+    def runtime_start() -> RuntimeStatus | JSONResponse:
+        try:
+            return runtime.start()
+        except RuntimeErrorBase as exc:
+            return _runtime_error(exc, "start")
+
+    @app.post("/v1/runtime/stop", response_model=RuntimeStatus)
+    def runtime_stop() -> RuntimeStatus | JSONResponse:
+        try:
+            return runtime.stop()
+        except RuntimeErrorBase as exc:
+            return _runtime_error(exc, "stop")
+
+    @app.post("/v1/runtime/reset", response_model=RuntimeStatus)
+    def runtime_reset() -> RuntimeStatus | JSONResponse:
+        try:
+            return runtime.reset()
+        except RuntimeErrorBase as exc:
+            return _runtime_error(exc, "reset")
+
+    @app.post("/v1/runtime/install/{apk_id}", response_model=AndroidApp)
+    def runtime_install(apk_id: str) -> AndroidApp | JSONResponse:
+        try:
+            return runtime.install(apk_id, storage)
+        except RuntimeErrorBase as exc:
+            return _runtime_error(exc, "install")
+
+    @app.post("/v1/runtime/launch/{apk_id}", response_model=AndroidApp)
+    def runtime_launch(apk_id: str) -> AndroidApp | JSONResponse:
+        try:
+            return runtime.launch(apk_id, storage)
+        except RuntimeErrorBase as exc:
+            return _runtime_error(exc, "launch")
+
+    @app.get("/v1/runtime/apps", response_model=list[AndroidApp])
+    def runtime_apps() -> list[AndroidApp] | JSONResponse:
+        try:
+            return runtime.list_apps()
+        except RuntimeErrorBase as exc:
+            return _runtime_error(exc, "apps")
 
     return app
 
