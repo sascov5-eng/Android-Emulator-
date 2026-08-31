@@ -22,6 +22,9 @@ from .runtime.errors import (
 )
 from .runtime.models import AndroidApp, RuntimeStatus
 from .storage import APKStorage
+from .stream import build_stream_service
+from .stream.errors import StreamErrorBase, StreamStartError, StreamStopError, StreamUnavailable
+from .stream.models import StreamStatus
 
 
 def _error(code: str, message: str, status_code: int) -> JSONResponse:
@@ -72,19 +75,34 @@ def _runtime_error(exc: RuntimeErrorBase, operation: str) -> JSONResponse:
     return _error("RUNTIME_OPERATION_FAILED", "Android runtime operation failed", 502)
 
 
+def _stream_error(exc: Exception, operation: str) -> JSONResponse:
+    if isinstance(exc, RuntimeNotReady):
+        return _error("RUNTIME_NOT_READY", "Android runtime is not ready", 409)
+    if isinstance(exc, StreamUnavailable):
+        return _error("STREAM_NOT_AVAILABLE", "Android stream is not available", 503)
+    if isinstance(exc, StreamStartError):
+        return _error("STREAM_START_FAILED", "Android stream failed to start", 502)
+    if isinstance(exc, StreamStopError):
+        return _error("STREAM_STOP_FAILED", "Android stream failed to stop", 502)
+    return _error("STREAM_OPERATION_FAILED", "Android stream operation failed", 502)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
     runtime_service: Any | None = None,
+    stream_service: Any | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings()
     storage = APKStorage(resolved_settings.data_dir)
     runtime = runtime_service or build_runtime_service(resolved_settings)
+    stream = stream_service or build_stream_service(resolved_settings, runtime)
 
-    app = FastAPI(title="Android Emulator API", version="0.2.0")
+    app = FastAPI(title="Android Emulator API", version="0.3.0")
     app.state.settings = resolved_settings
     app.state.apk_storage = storage
     app.state.runtime_service = runtime
+    app.state.stream_service = stream
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -159,6 +177,27 @@ def create_app(
             return runtime.list_apps()
         except RuntimeErrorBase as exc:
             return _runtime_error(exc, "apps")
+
+    @app.get("/v1/stream/status", response_model=StreamStatus)
+    def stream_status() -> StreamStatus | JSONResponse:
+        try:
+            return stream.status()
+        except (RuntimeErrorBase, StreamErrorBase) as exc:
+            return _stream_error(exc, "status")
+
+    @app.post("/v1/stream/start", response_model=StreamStatus)
+    def stream_start() -> StreamStatus | JSONResponse:
+        try:
+            return stream.start()
+        except (RuntimeErrorBase, StreamErrorBase) as exc:
+            return _stream_error(exc, "start")
+
+    @app.post("/v1/stream/stop", response_model=StreamStatus)
+    def stream_stop() -> StreamStatus | JSONResponse:
+        try:
+            return stream.stop()
+        except (RuntimeErrorBase, StreamErrorBase) as exc:
+            return _stream_error(exc, "stop")
 
     return app
 
