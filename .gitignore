@@ -1,0 +1,20 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+backend/data/
+
+# Xcode / XcodeGen output
+ios/AndroidEmulator.xcodeproj/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Build artifacts
+AndroidEmulator-unsigned.ipa
+
+# Local environment
+.env
