@@ -7,12 +7,18 @@ private struct APIErrorPayload: Decodable {
 
 enum APIClientError: LocalizedError {
     case invalidResponse
+    case invalidWebSocketURL
+    case streamStatusUnavailable
     case server(code: String?, message: String, statusCode: Int)
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
             return "The backend returned an invalid response."
+        case .invalidWebSocketURL:
+            return "The backend WebSocket URL is invalid."
+        case .streamStatusUnavailable:
+            return "Stream status is unavailable."
         case let .server(code, message, statusCode):
             if let code, !code.isEmpty {
                 return "\(message) (\(code), HTTP \(statusCode))"
@@ -22,7 +28,23 @@ enum APIClientError: LocalizedError {
     }
 }
 
-final class APIClient: @unchecked Sendable {
+protocol SessionAPI: Sendable {
+    func runtimeStart() async throws -> RuntimeStatus
+    func install(apkID: String) async throws -> AndroidApp
+    func launch(apkID: String) async throws -> AndroidApp
+    func streamStart() async throws -> StreamStatus
+    func streamStatus() async throws -> StreamStatus
+    func streamStop() async throws -> StreamStatus
+    func inputWebSocketURL() -> URL?
+}
+
+extension SessionAPI {
+    func streamStatus() async throws -> StreamStatus {
+        throw APIClientError.streamStatusUnavailable
+    }
+}
+
+final class APIClient: @unchecked Sendable, SessionAPI {
     let baseURL: URL
     private let session: URLSession
 
@@ -39,11 +61,7 @@ final class APIClient: @unchecked Sendable {
     }
 
     func listAPKs() async throws -> [APKItem] {
-        var request = URLRequest(url: endpoint("/v1/apks"))
-        request.httpMethod = "GET"
-
-        let (data, response) = try await session.data(for: request)
-        return try decode([APKItem].self, data: data, response: response)
+        try await request([APKItem].self, method: "GET", url: endpoint("/v1/apks"))
     }
 
     func uploadAPK(fileURL: URL) async throws -> APKItem {
@@ -64,6 +82,57 @@ final class APIClient: @unchecked Sendable {
 
         let (data, response) = try await session.upload(for: request, from: body)
         return try decode(APKItem.self, data: data, response: response)
+    }
+
+    func runtimeStart() async throws -> RuntimeStatus {
+        try await request(RuntimeStatus.self, method: "POST", url: endpoint("/v1/runtime/start"))
+    }
+
+    func install(apkID: String) async throws -> AndroidApp {
+        let url = endpoint("/v1/runtime/install").appendingPathComponent(apkID)
+        return try await request(AndroidApp.self, method: "POST", url: url)
+    }
+
+    func launch(apkID: String) async throws -> AndroidApp {
+        let url = endpoint("/v1/runtime/launch").appendingPathComponent(apkID)
+        return try await request(AndroidApp.self, method: "POST", url: url)
+    }
+
+    func streamStart() async throws -> StreamStatus {
+        try await request(StreamStatus.self, method: "POST", url: endpoint("/v1/stream/start"))
+    }
+
+    func streamStatus() async throws -> StreamStatus {
+        try await request(StreamStatus.self, method: "GET", url: endpoint("/v1/stream/status"))
+    }
+
+    func streamStop() async throws -> StreamStatus {
+        try await request(StreamStatus.self, method: "POST", url: endpoint("/v1/stream/stop"))
+    }
+
+    func inputWebSocketURL() -> URL? {
+        guard var components = URLComponents(url: endpoint("/v1/stream/input"), resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        switch components.scheme?.lowercased() {
+        case "https":
+            components.scheme = "wss"
+        case "http":
+            components.scheme = "ws"
+        case "wss", "ws":
+            break
+        default:
+            return nil
+        }
+        return components.url
+    }
+
+    private func request<T: Decodable>(_ type: T.Type, method: String, url: URL) async throws -> T {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        return try decode(type, data: data, response: response)
     }
 
     private func decode<T: Decodable>(_ type: T.Type, data: Data, response: URLResponse) throws -> T {

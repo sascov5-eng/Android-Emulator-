@@ -8,6 +8,7 @@ struct LibraryView: View {
     )
     @State private var isImporterPresented = false
     @State private var isSettingsPresented = false
+    @State private var selectedAPK: APKItem?
 
     var body: some View {
         NavigationStack {
@@ -37,17 +38,30 @@ struct LibraryView: View {
                     }
                 } else {
                     List(viewModel.items) { item in
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(item.originalFilename)
-                                .font(.headline)
-                                .lineLimit(1)
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(item.originalFilename)
+                                    .font(.headline)
+                                    .lineLimit(1)
 
-                            HStack(spacing: 10) {
-                                Text(ByteCountFormatter.string(fromByteCount: Int64(item.sizeBytes), countStyle: .file))
-                                Text(item.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                HStack(spacing: 10) {
+                                    Text(ByteCountFormatter.string(fromByteCount: Int64(item.sizeBytes), countStyle: .file))
+                                    Text(item.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+
+                            Spacer(minLength: 8)
+
+                            Button {
+                                selectedAPK = item
+                            } label: {
+                                Label("Run", systemImage: "play.fill")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityLabel("Run \(item.originalFilename)")
                         }
                         .padding(.vertical, 4)
                     }
@@ -78,6 +92,17 @@ struct LibraryView: View {
         .sheet(isPresented: $isSettingsPresented) {
             NavigationStack {
                 SettingsView(backendURLString: $backendURLString)
+            }
+        }
+        .fullScreenCover(item: $selectedAPK) { item in
+            if let baseURL = URL(string: backendURLString) {
+                SessionView(apk: item, baseURL: baseURL)
+            } else {
+                ContentUnavailableView(
+                    "Invalid backend URL",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text("Open Settings and enter a valid backend address.")
+                )
             }
         }
         .fileImporter(

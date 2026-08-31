@@ -1,0 +1,25 @@
+logLevel: info
+
+rtsp: true
+rtspTransports: [tcp]
+rtspAddress: 127.0.0.1:8554
+
+hls: false
+rtmp: false
+srt: false
+playback: false
+api: false
+metrics: false
+pprof: false
+
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcAllowOrigins: ['*']
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: ''
+webrtcIPsFromInterfaces: true
+
+paths:
+  android/session:
+    source: publisher
