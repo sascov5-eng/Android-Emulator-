@@ -39,7 +39,30 @@ final class SessionViewModel: ObservableObject {
             state = .live
         } catch {
             state = .error
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            errorMessage = Self.publicMessage(for: error)
+        }
+    }
+
+    func refreshStatus() async {
+        guard state == .live || state == .error else { return }
+        do {
+            let status = try await api.streamStatus()
+            streamStatus = status
+            switch status.state {
+            case .live:
+                state = .live
+                errorMessage = nil
+            case .error:
+                state = .error
+                errorMessage = status.error ?? "Android stream is unavailable."
+            case .starting:
+                state = .starting
+            case .stopped:
+                state = .stopped
+            }
+        } catch {
+            state = .error
+            errorMessage = Self.publicMessage(for: error)
         }
     }
 
@@ -47,9 +70,13 @@ final class SessionViewModel: ObservableObject {
         do {
             streamStatus = try await api.streamStop()
         } catch {
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            errorMessage = Self.publicMessage(for: error)
         }
         state = .stopped
+    }
+
+    private static func publicMessage(for error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 }
 
