@@ -19,17 +19,18 @@ struct WHEPWebView: UIViewRepresentable {
         webView.backgroundColor = .black
         webView.scrollView.isScrollEnabled = false
         webView.scrollView.bounces = false
-        loadPlayer(in: webView)
+        loadPlayer(in: webView, coordinator: context.coordinator)
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         if context.coordinator.loadedURL != whepURL {
-            loadPlayer(in: webView)
+            loadPlayer(in: webView, coordinator: context.coordinator)
         }
     }
 
-    private func loadPlayer(in webView: WKWebView) {
+    private func loadPlayer(in webView: WKWebView, coordinator: Coordinator) {
+        coordinator.loadedURL = whepURL
         let urlLiteral = Self.javascriptString(whepURL.absoluteString)
         let html = """
         <!doctype html>
@@ -49,6 +50,9 @@ struct WHEPWebView: UIViewRepresentable {
             const video = document.getElementById('video');
             let pc = null;
             let resourceURL = null;
+            let stopped = false;
+            let retryCount = 0;
+            const maxRetries = 8;
 
             function waitForIceGatheringComplete(peer) {
               if (peer.iceGatheringState === 'complete') return Promise.resolve();
@@ -63,53 +67,81 @@ struct WHEPWebView: UIViewRepresentable {
               });
             }
 
-            async function start() {
-              pc = new RTCPeerConnection();
-              pc.addTransceiver('video', { direction: 'recvonly' });
-              pc.ontrack = event => {
+            async function disposePeer() {
+              const oldResource = resourceURL;
+              resourceURL = null;
+              if (pc) {
+                pc.onconnectionstatechange = null;
+                pc.ontrack = null;
+                pc.close();
+                pc = null;
+              }
+              if (oldResource) {
+                try { await fetch(oldResource, { method: 'DELETE' }); } catch (_) {}
+              }
+            }
+
+            async function connect() {
+              if (stopped) return;
+              await disposePeer();
+
+              const peer = new RTCPeerConnection();
+              pc = peer;
+              peer.addTransceiver('video', { direction: 'recvonly' });
+              peer.ontrack = event => {
+                retryCount = 0;
                 if (event.streams && event.streams[0]) {
                   video.srcObject = event.streams[0];
                 } else {
-                  const stream = new MediaStream([event.track]);
-                  video.srcObject = stream;
+                  video.srcObject = new MediaStream([event.track]);
                 }
                 video.play().catch(() => {});
               };
+              peer.onconnectionstatechange = () => {
+                if (stopped || peer !== pc) return;
+                if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+                  scheduleReconnect();
+                }
+              };
 
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              await waitForIceGatheringComplete(pc);
+              const offer = await peer.createOffer();
+              await peer.setLocalDescription(offer);
+              await waitForIceGatheringComplete(peer);
 
               const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/sdp' },
-                body: pc.localDescription.sdp
+                body: peer.localDescription.sdp
               });
               if (!response.ok) throw new Error('WHEP HTTP ' + response.status);
 
               const location = response.headers.get('Location');
               if (location) resourceURL = new URL(location, endpoint).toString();
               const answer = await response.text();
-              await pc.setRemoteDescription({ type: 'answer', sdp: answer });
+              await peer.setRemoteDescription({ type: 'answer', sdp: answer });
+            }
+
+            function scheduleReconnect() {
+              if (stopped || retryCount >= maxRetries) return;
+              const delay = Math.min(1000 * Math.pow(2, retryCount), 8000);
+              retryCount += 1;
+              setTimeout(() => {
+                if (!stopped) connect().catch(scheduleReconnect);
+              }, delay);
             }
 
             async function stop() {
-              if (resourceURL) {
-                try { await fetch(resourceURL, { method: 'DELETE' }); } catch (_) {}
-              }
-              if (pc) pc.close();
+              stopped = true;
+              await disposePeer();
             }
 
             window.addEventListener('pagehide', stop);
-            start().catch(error => {
-              document.body.dataset.error = error.message || 'stream failed';
-            });
+            connect().catch(scheduleReconnect);
           })();
           </script>
         </body>
         </html>
         """
-        webView.navigationDelegate = webView.navigationDelegate
         webView.loadHTMLString(html, baseURL: nil)
     }
 
@@ -127,12 +159,9 @@ struct WHEPWebView: UIViewRepresentable {
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            if navigationAction.navigationType == .other,
-               navigationAction.request.url?.scheme == "about" || navigationAction.request.url == nil {
-                decisionHandler(.allow)
-            } else {
-                decisionHandler(.cancel)
-            }
+            let url = navigationAction.request.url
+            let isLocalDocument = url == nil || url?.scheme == "about"
+            decisionHandler(isLocalDocument ? .allow : .cancel)
         }
     }
 }
