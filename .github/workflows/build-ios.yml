@@ -30,6 +30,23 @@ jobs:
         working-directory: ios
         run: xcodegen generate
 
+      - name: Validate generated app metadata
+        working-directory: ios
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+
+          path = Path("AndroidEmulator/Info.plist")
+          with path.open("rb") as stream:
+              info = plistlib.load(stream)
+
+          assert info["CFBundleDisplayName"] == "Android Emulator"
+          assert info["CFBundleShortVersionString"] == "0.1.0"
+          assert str(info["CFBundleVersion"]) == "1"
+          assert info["NSAppTransportSecurity"]["NSAllowsArbitraryLoads"] is True
+          PY
+
       - name: Choose iPhone simulator
         id: simulator
         shell: bash
@@ -85,6 +102,24 @@ jobs:
           cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/AndroidEmulator.app"
           cd "$RUNNER_TEMP/ipa"
           zip -qry "$GITHUB_WORKSPACE/AndroidEmulator-unsigned.ipa" Payload
+
+      - name: Verify packaged IPA
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          import zipfile
+
+          ipa = "AndroidEmulator-unsigned.ipa"
+          with zipfile.ZipFile(ipa) as archive:
+              names = set(archive.namelist())
+              assert "Payload/AndroidEmulator.app/AndroidEmulator" in names
+              info = plistlib.loads(archive.read("Payload/AndroidEmulator.app/Info.plist"))
+
+          assert info["CFBundleIdentifier"] == "com.androidemulator.client"
+          assert info["CFBundleDisplayName"] == "Android Emulator"
+          assert info["CFBundleShortVersionString"] == "0.1.0"
+          PY
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v7
