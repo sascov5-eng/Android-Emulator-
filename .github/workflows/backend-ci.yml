@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      - "streaming/**"
       - "docker-compose.runtime.yml"
       - ".env.example"
       - ".github/workflows/backend-ci.yml"
@@ -13,6 +14,7 @@ on:
       - "feat/**"
     paths:
       - "backend/**"
+      - "streaming/**"
       - "docker-compose.runtime.yml"
       - ".env.example"
       - ".github/workflows/backend-ci.yml"
@@ -43,12 +45,16 @@ jobs:
         working-directory: backend
         run: python -m pytest -v
 
-      - name: Validate ADB deployment isolation
+      - name: Validate private control and ingest ports
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          targets = [Path("docker-compose.runtime.yml"), Path(".env.example")]
+          targets = [
+              Path("docker-compose.runtime.yml"),
+              Path(".env.example"),
+              Path("streaming/mediamtx.yml"),
+          ]
           for path in targets:
               text = path.read_text(encoding="utf-8")
               for number, line in enumerate(text.splitlines(), start=1):
@@ -57,11 +63,33 @@ jobs:
                       raise SystemExit(f"Public ADB binding in {path}:{number}")
                   if "5555:5555" in compact and "127.0.0.1:" not in compact:
                       raise SystemExit(f"Unscoped ADB port mapping in {path}:{number}")
+                  if "8554:8554" in compact:
+                      raise SystemExit(f"RTSP ingest must not be host-published in {path}:{number}")
 
           env = Path(".env.example").read_text(encoding="utf-8")
           if "ANDROID_EMULATOR_ADB_HOST=127.0.0.1" not in env:
               raise SystemExit(".env.example must keep ADB on loopback")
+          if "ANDROID_EMULATOR_STREAM_RTSP_URL=rtsp://127.0.0.1:8554/" not in env:
+              raise SystemExit(".env.example must keep RTSP ingest on loopback")
+
+          mediamtx = Path("streaming/mediamtx.yml").read_text(encoding="utf-8")
+          if "rtspAddress: 127.0.0.1:8554" not in mediamtx:
+              raise SystemExit("MediaMTX RTSP listener must remain loopback-only")
           PY
 
       - name: Build runtime-controller image
-        run: docker build -t android-emulator-backend:test ./backend
+        run: |
+          docker build -t android-emulator-backend:test ./backend
+          docker run --rm android-emulator-backend:test ffmpeg -version
+          docker run --rm android-emulator-backend:test adb version
+
+      - name: Validate MediaMTX config
+        run: |
+          docker run -d --name android-emulator-mediamtx-ci \
+            --network host \
+            -v "$PWD/streaming/mediamtx.yml:/mediamtx.yml:ro" \
+            bluenviron/mediamtx:1
+          sleep 2
+          test "$(docker inspect -f '{{.State.Running}}' android-emulator-mediamtx-ci)" = "true"
+          docker logs android-emulator-mediamtx-ci
+          docker rm -f android-emulator-mediamtx-ci
