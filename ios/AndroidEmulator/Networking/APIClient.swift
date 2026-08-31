@@ -8,6 +8,7 @@ private struct APIErrorPayload: Decodable {
 enum APIClientError: LocalizedError {
     case invalidResponse
     case invalidWebSocketURL
+    case streamStatusUnavailable
     case server(code: String?, message: String, statusCode: Int)
 
     var errorDescription: String? {
@@ -16,6 +17,8 @@ enum APIClientError: LocalizedError {
             return "The backend returned an invalid response."
         case .invalidWebSocketURL:
             return "The backend WebSocket URL is invalid."
+        case .streamStatusUnavailable:
+            return "Stream status is unavailable."
         case let .server(code, message, statusCode):
             if let code, !code.isEmpty {
                 return "\(message) (\(code), HTTP \(statusCode))"
@@ -30,8 +33,15 @@ protocol SessionAPI: Sendable {
     func install(apkID: String) async throws -> AndroidApp
     func launch(apkID: String) async throws -> AndroidApp
     func streamStart() async throws -> StreamStatus
+    func streamStatus() async throws -> StreamStatus
     func streamStop() async throws -> StreamStatus
     func inputWebSocketURL() -> URL?
+}
+
+extension SessionAPI {
+    func streamStatus() async throws -> StreamStatus {
+        throw APIClientError.streamStatusUnavailable
+    }
 }
 
 final class APIClient: @unchecked Sendable, SessionAPI {
