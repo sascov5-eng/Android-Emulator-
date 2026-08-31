@@ -72,10 +72,15 @@ adb -s 127.0.0.1:5555 exec-out screenrecord \
   --output-format=h264 \
   --bit-rate <configured> \
   --size <configured width>x<configured height> \
+  --time-limit 175 \
   -
 ```
 
 The capture process produces H.264 to stdout. The backend never forwards raw ADB to the client.
+
+AOSP `screenrecord` has a maximum recording duration of 180 seconds. Therefore the Phase 3 MVP intentionally runs capture in supervised segments of at most 175 seconds. `StreamManager` treats normal segment expiry as rotation rather than failure, starts a replacement publisher on the same logical stream path, and exposes the session as the same `session_id`. The iOS player must tolerate a brief media reconnect at rotation boundaries.
+
+This makes Phase 3 a functional interactive-streaming MVP, not yet an uninterrupted gaming-grade capture pipeline. If rotation gaps or capture latency are unacceptable on the real ReDroid host, the next milestone replaces the capture/control internals with a scrcpy-based adapter while preserving the public stream/input APIs.
 
 ### Video publish path
 
@@ -94,6 +99,14 @@ The naming is intentionally abstracted behind `StreamManager` so later multi-ses
 The iOS client embeds a `WKWebView` hosting a minimal local HTML/JavaScript WHEP player page. This keeps the first working WebRTC implementation independent of a native WebRTC binary dependency and allows the unsigned IPA pipeline to remain simple.
 
 The web view has no arbitrary navigation surface. The only remote endpoint it receives is the backend-provided WHEP URL for the current session.
+
+MediaMTX WHEP URLs use the stream path followed by `/whep`, for example:
+
+```text
+https://android.example.com/webrtc/android/session/whep
+```
+
+when the reverse proxy exposes MediaMTX WebRTC under `/webrtc` and strips that prefix before forwarding to MediaMTX.
 
 A future optimization may replace this with a native WebRTC renderer after the transport is proven.
 
@@ -126,12 +139,13 @@ No internal command lines, process IDs, local ADB endpoints, stderr, or host fil
 `StreamManager` owns only media-process lifecycle:
 
 - validate that Android runtime is `ready`;
-- start MediaMTX if needed;
+- start/check MediaMTX as needed;
 - launch capture/publish pipeline;
+- rotate `screenrecord` capture segments before the 180-second hard limit;
 - wait for the stream to become readable;
 - return stable public session metadata;
 - stop capture processes idempotently;
-- detect dead capture/publisher processes;
+- detect dead capture/publisher processes outside planned rotation;
 - transition to `error` on unexpected exit;
 - sanitize process errors.
 
@@ -157,14 +171,14 @@ Response example:
 {
   "state": "live",
   "session_id": "default",
-  "whep_url": "https://example.invalid/webrtc/android/session/whep",
+  "whep_url": "https://android.example.com/webrtc/android/session/whep",
   "width": 720,
   "height": 1280,
   "fps": 30
 }
 ```
 
-The backend constructs the public WHEP URL from an explicit configured public base URL. It never derives a trusted external address from the incoming `Host` header.
+The backend constructs the public WHEP URL from an explicit configured MediaMTX WebRTC public base URL. It never derives a trusted external address from the incoming `Host` header.
 
 ### Public errors
 
@@ -285,7 +299,7 @@ The first version is portrait-first because ReDroid is currently configured for 
 
 If the WebSocket disconnects, the client reconnects with bounded exponential backoff while the session screen remains open.
 
-If video playback fails, the user sees a retry action. Automatic infinite retry loops are not allowed.
+If video playback fails, the WHEP player performs a bounded reconnect sequence. This reconnect path is also used for planned `screenrecord` segment rotation. Automatic infinite retry loops are not allowed.
 
 Closing `SessionView` closes the input WebSocket. The stream may be stopped explicitly on close for the single-user Phase 3 deployment.
 
@@ -305,13 +319,13 @@ The backend continues to have privileged infrastructure access because Phase 2 a
 
 ### Public URL configuration
 
-New configuration includes an explicit public streaming base URL, for example:
+New configuration includes an explicit MediaMTX WebRTC public base URL, for example:
 
 ```dotenv
-ANDROID_EMULATOR_STREAM_PUBLIC_BASE_URL=https://android.example.com
+ANDROID_EMULATOR_STREAM_PUBLIC_BASE_URL=https://android.example.com/webrtc
 ```
 
-The client-visible WHEP URL is created only from this configured value.
+The client-visible WHEP URL is created only from this configured value plus `/android/session/whep`.
 
 ## Security Invariants
 
@@ -335,7 +349,8 @@ Use fake process/runtime/input adapters to test:
 - stream start transitions `stopped → starting → live`;
 - repeated start is idempotent;
 - stop is idempotent;
-- dead publisher transitions to `error`;
+- planned capture expiry triggers rotation instead of permanent failure;
+- unexpected dead publisher transitions to `error`;
 - public WHEP URL construction ignores request Host headers;
 - subprocess errors are sanitized;
 - pointer coordinate validation and mapping;
@@ -362,7 +377,8 @@ Add unit tests for:
 - stream/input endpoint construction;
 - normalized coordinate mapping with aspect-fit letterboxing;
 - `Run` orchestration state transitions;
-- navigation key message encoding.
+- navigation key message encoding;
+- bounded WHEP reconnect state transitions.
 
 The existing iOS GitHub Actions workflow must continue to:
 
@@ -379,12 +395,13 @@ Phase 3 code is acceptable when all of the following are true:
 1. Backend exposes stream start/status/stop APIs with stable public errors.
 2. Stream process lifecycle is interface-driven and tested without ReDroid in normal CI.
 3. Deployment includes MediaMTX and FFmpeg-based H.264 publishing configuration.
-4. ADB remains private and existing Phase 2 isolation checks continue to pass.
-5. iOS provides a SessionView that can consume the configured WHEP/WebRTC stream.
-6. iOS sends normalized single-pointer and navigation events over WebSocket.
-7. Backend validates, maps, and injects those events through an `InputAdapter`.
-8. Backend tests, deployment security checks, Docker build, iOS unit tests, device build, and IPA packaging all pass.
-9. No authentication, audio, multitouch, gamepad, multi-user scheduling, or TURN-server work is silently included in this phase.
+4. Planned `screenrecord` rotation before the 180-second limit is represented explicitly and covered by tests.
+5. ADB remains private and existing Phase 2 isolation checks continue to pass.
+6. iOS provides a SessionView that can consume the configured WHEP/WebRTC stream.
+7. iOS sends normalized single-pointer and navigation events over WebSocket.
+8. Backend validates, maps, and injects those events through an `InputAdapter`.
+9. Backend tests, deployment security checks, Docker build, iOS unit tests, device build, and IPA packaging all pass.
+10. No authentication, audio, multitouch, gamepad, multi-user scheduling, or TURN-server work is silently included in this phase.
 
 ## Explicit Non-Goals
 
@@ -393,6 +410,7 @@ Phase 3 code is acceptable when all of the following are true:
 - audio streaming;
 - true multitouch;
 - Bluetooth/gamepad translation;
+- uninterrupted gaming-grade capture with no 180-second `screenrecord` rotation boundary;
 - multi-user or concurrent Android sessions;
 - production authentication/authorization;
 - persistent public TURN infrastructure;
@@ -401,4 +419,4 @@ Phase 3 code is acceptable when all of the following are true:
 
 ## Follow-on
 
-After this milestone, the highest-value next step is to benchmark latency and control quality on a real Linux/ReDroid host. If ADB input or `screenrecord` latency is insufficient for games, the next milestone replaces the media/control internals with a scrcpy-based low-latency adapter while preserving the Phase 3 public APIs and iOS interaction model.
+After this milestone, the highest-value next step is to benchmark latency and control quality on a real Linux/ReDroid host. If ADB input or `screenrecord` latency/rotation is insufficient for games, the next milestone replaces the media/control internals with a scrcpy-based low-latency adapter while preserving the Phase 3 public APIs and iOS interaction model.
