@@ -83,7 +83,7 @@ def test_start_is_idempotent_when_stream_is_live() -> None:
     assert adapter.start_calls == 1
 
 
-def test_status_marks_dead_live_publisher_as_error() -> None:
+def test_status_restarts_dead_live_publisher_for_segment_rotation() -> None:
     adapter = FakeProcessAdapter(live=False)
     manager = make_manager(FakeRuntime(), adapter)
     manager.start()
@@ -91,8 +91,24 @@ def test_status_marks_dead_live_publisher_as_error() -> None:
 
     status = manager.status()
 
+    assert status.state is StreamState.LIVE
+    assert status.whep_url == "https://stream.example.test/android/session/whep"
+    assert adapter.start_calls == 2
+
+
+def test_status_marks_stream_error_when_dead_publisher_cannot_restart() -> None:
+    adapter = FakeProcessAdapter(live=False)
+    manager = make_manager(FakeRuntime(), adapter)
+    manager.start()
+    adapter.live = False
+    adapter.fail_start = True
+
+    status = manager.status()
+
     assert status.state is StreamState.ERROR
     assert status.whep_url is None
+    assert status.error == "Android stream is not available"
+    assert "private ffmpeg stderr" not in (status.error or "")
 
 
 def test_stop_is_idempotent() -> None:
