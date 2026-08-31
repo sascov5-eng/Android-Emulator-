@@ -151,17 +151,17 @@ struct WHEPWebView: UIViewRepresentable {
         return String(array.dropFirst().dropLast())
     }
 
+    @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate {
         var loadedURL: URL?
 
         func webView(
             _ webView: WKWebView,
-            decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-        ) {
+            decidePolicyFor navigationAction: WKNavigationAction
+        ) async -> WKNavigationActionPolicy {
             let url = navigationAction.request.url
             let isLocalDocument = url == nil || url?.scheme == "about"
-            decisionHandler(isLocalDocument ? .allow : .cancel)
+            return isLocalDocument ? .allow : .cancel
         }
     }
 }
