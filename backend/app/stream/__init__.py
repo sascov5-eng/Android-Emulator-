@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..config import Settings
+from .input import ADBInputAdapter, InputService, parse_input_event
 from .models import StreamState, StreamStatus
 from .process import FFmpegScreenrecordAdapter
 from .service import StreamManager
@@ -29,10 +30,26 @@ def build_stream_service(settings: Settings, runtime: object) -> StreamManager:
     )
 
 
+def build_input_service(settings: Settings) -> InputService:
+    adapter = ADBInputAdapter(
+        adb_bin=settings.adb_bin,
+        adb_target=f"{settings.adb_host}:{settings.adb_port}",
+    )
+    return InputService(
+        adapter=adapter,
+        width=settings.stream_width,
+        height=settings.stream_height,
+    )
+
+
 __all__ = [
+    "ADBInputAdapter",
     "FFmpegScreenrecordAdapter",
+    "InputService",
     "StreamManager",
     "StreamState",
     "StreamStatus",
+    "build_input_service",
     "build_stream_service",
+    "parse_input_event",
 ]
