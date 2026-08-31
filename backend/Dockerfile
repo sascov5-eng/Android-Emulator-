@@ -12,6 +12,7 @@ RUN apt-get update \
         aapt \
         ca-certificates \
         docker.io \
+        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
